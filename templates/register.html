@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Create account · Campus Hardware Inventory{% endblock %}
+{% block content %}
+<div class="section-title">
+  <h2>Create account</h2>
+  <p>Students and lab assistants can request equipment once registered.</p>
+</div>
+<form method="post" class="form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <label class="field">
+    <span>Username</span>
+    <input name="username" value="{{ form.get('username', '') }}" required minlength="3" maxlength="20"
+           pattern="[A-Za-z0-9_.\-]+" autocomplete="username">
+  </label>
+  <label class="field">
+    <span>Email address</span>
+    <input name="email" type="email" value="{{ form.get('email', '') }}" required maxlength="120" autocomplete="email">
+  </label>
+  <label class="field">
+    <span>Password</span>
+    <input name="password" type="password" required minlength="8" autocomplete="new-password">
+    <small>8+ characters with an uppercase, lowercase, number and one of @#$%^&amp;*!?</small>
+  </label>
+  <p class="hint">New accounts are created with the <strong>User</strong> role. An administrator can promote an account on the Users page.</p>
+  <button class="btn btn-green btn-block btn-lg" type="submit">Create account</button>
+</form>
+{% endblock %}

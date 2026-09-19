@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Campus Hardware Inventory{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script>
+    /* Apply the saved theme before the page paints (per-browser preference). */
+    try { var t = localStorage.getItem("theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+  </script>
+</head>
+<body>
+
+{# ---------- reusable icons (same glyph set as the desktop sidebar) ---------- #}
+{% macro icon(name) -%}
+<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+  {%- if name == 'overview' -%}<rect x="3" y="3" width="7" height="6" rx="1.5"/><rect x="14" y="3" width="7" height="9" rx="1.5"/><rect x="3" y="13" width="7" height="8" rx="1.5"/><rect x="14" y="16" width="7" height="5" rx="1.5"/>
+  {%- elif name == 'inventory' -%}<rect x="3" y="7" width="18" height="13" rx="2"/><path d="M3 11h18M9 11v9"/>
+  {%- elif name == 'borrow' -%}<path d="M8 6h13M8 12h13M8 18h9"/><circle cx="4" cy="6" r="1.2" fill="currentColor"/><circle cx="4" cy="12" r="1.2" fill="currentColor"/><circle cx="4" cy="18" r="1.2" fill="currentColor"/>
+  {%- elif name == 'approvals' -%}<path d="M4 12.5l5 5L20 6.5"/>
+  {%- elif name == 'students' -%}<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7"/>
+  {%- elif name == 'users' -%}<circle cx="9" cy="8" r="3.5"/><circle cx="17" cy="9.5" r="2.5"/><path d="M2.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6M16 14.2c3 .2 5.5 2.2 5.5 5.8"/>
+  {%- elif name == 'activity' -%}<path d="M3 13h4l2-7 4 13 2.5-6H21"/>
+  {%- elif name == 'settings' -%}<circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/>
+  {%- elif name == 'logout' -%}<path d="M10 4H5v16h5M9 12h11M16 8l4 4-4 4"/>
+  {%- elif name == 'moon' -%}<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/>
+  {%- elif name == 'check' -%}<path d="M4 12.5l5 5L20 6.5"/>
+  {%- elif name == 'clock' -%}<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>
+  {%- elif name == 'shield' -%}<path d="M12 3l7.5 3v5.5c0 4.6-3.2 8.2-7.5 9.5-4.3-1.3-7.5-4.9-7.5-9.5V6z"/>
+  {%- endif -%}
+</svg>
+{%- endmacro %}
+
+{# ---------- flash messages -> toasts ---------- #}
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}
+  <div class="toasts" role="status">
+    {% for kind, message in messages %}
+      <div class="toast toast-{{ kind if kind in ['success','error','info','warning'] else 'info' }}">{{ message }}
+        <button type="button" class="toast-close" aria-label="Dismiss" onclick="this.parentElement.remove()">×</button>
+      </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+{% endwith %}
+
+{% if error_code is defined %}
+  {# ---------------- error page ---------------- #}
+  <main class="error-wrap">
+    <div class="card error-card">
+      <p class="eyebrow">Error {{ error_code }}</p>
+      <h1>{{ 'Page not found' if error_code == 404 else 'That did not work' }}</h1>
+      <p class="muted">{{ error_message }}</p>
+      <a class="btn btn-primary" href="{{ url_for('index') }}">Back to the app</a>
+    </div>
+  </main>
+
+{% elif auth_page %}
+  {# ---------------- sign in / register / reset layout ---------------- #}
+  <main class="auth">
+    <section class="auth-hero">
+      <div class="brand"><span class="logo">{{ icon('inventory') }}</span><span>Campus Hardware</span></div>
+      <h1>Every cable, board and tool accounted for.</h1>
+      <p class="hero-copy">Track lab stock, request equipment by school ID, and see what is overdue before the semester ends.</p>
+      <ul class="features">
+        <li><span class="glyph">{{ icon('students') }}</span><div><strong>Student ID checkout</strong><small>Every loan is tied to a verified school ID</small></div></li>
+        <li><span class="glyph">{{ icon('inventory') }}</span><div><strong>Live stock counts</strong><small>Stock moves the moment a request is approved</small></div></li>
+        <li><span class="glyph">{{ icon('clock') }}</span><div><strong>Overdue watchlist</strong><small>Due dates flagged the day they pass</small></div></li>
+        <li><span class="glyph">{{ icon('activity') }}</span><div><strong>Full audit trail</strong><small>Who requested, approved and returned what</small></div></li>
+      </ul>
+      <p class="hero-foot">v3.2 · Flask · {{ database_label.split(' ')[0] }} · Role-based access</p>
+    </section>
+    <section class="auth-panel">
+      <div class="card auth-card">
+        <nav class="segmented" aria-label="Account">
+          <a href="{{ url_for('login') }}" class="{{ 'active' if request.endpoint == 'login' }}">Sign in</a>
+          <a href="{{ url_for('register') }}" class="{{ 'active' if request.endpoint == 'register' }}">Register</a>
+          <a href="{{ url_for('reset') }}" class="{{ 'active' if request.endpoint == 'reset' }}">Reset</a>
+        </nav>
+        {% block content %}{% endblock %}
+      </div>
+    </section>
+  </main>
+
+{% else %}
+  {# ---------------- application shell ---------------- #}
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand"><span class="logo">{{ icon('inventory') }}</span><span>Inventory</span></div>
+      <nav class="nav">
+        {% set labels = {'overview': 'Dashboard', 'inventory': 'Inventory', 'borrow': 'Borrow log' if is_admin else 'My requests',
+                          'approvals': 'Approvals', 'students': 'Students', 'users': 'Users',
+                          'activity': 'Activity', 'settings': 'Settings'} %}
+        {% for name in tabs or [] %}
+          <a href="{{ url_for('dashboard', tab=name) }}" class="nav-item {{ 'active' if name == tab }}">
+            {{ icon(name) }}<span>{{ labels[name] }}</span>
+            {% if name == 'approvals' and metrics and (metrics.pending_borrows + metrics.pending_returns) %}
+              <span class="badge">{{ metrics.pending_borrows + metrics.pending_returns }}</span>
+            {% elif name == 'users' and metrics and metrics.pending_resets %}
+              <span class="badge">{{ metrics.pending_resets }}</span>
+            {% endif %}
+          </a>
+        {% endfor %}
+      </nav>
+      <div class="sidebar-foot">
+        <div class="who">
+          <span class="avatar">{{ current_user.username[:2]|upper }}</span>
+          <div><strong>{{ current_user.username }}</strong><small>{{ current_user.role|title }}</small></div>
+        </div>
+        <form method="post" action="{{ url_for('logout') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button class="signout" type="submit">{{ icon('logout') }}<span>Sign out</span></button>
+        </form>
+      </div>
+    </aside>
+    <div class="main">
+      <header class="topbar">
+        <h1 class="page-title">{% block page_title %}Dashboard{% endblock %}</h1>
+        <div class="topbar-actions">
+          <button class="btn btn-ghost btn-icon" type="button" id="themeToggle" title="Toggle dark mode">{{ icon('moon') }}</button>
+          <a class="btn btn-primary" href="{{ url_for('dashboard', tab='borrow') }}#borrow-form">{{ 'New borrow' if is_admin else 'Request item' }}</a>
+        </div>
+      </header>
+      <main class="content">
+        {{ self.content() }}
+      </main>
+    </div>
+  </div>
+{% endif %}
+
+<script>
+  /* Theme toggle + auto-dismiss toasts + confirm dialogs. */
+  (function () {
+    var btn = document.getElementById("themeToggle");
+    if (btn) btn.addEventListener("click", function () {
+      var root = document.documentElement;
+      var dark = root.dataset.theme === "dark" ||
+        (!root.dataset.theme && window.matchMedia("(prefers-color-scheme: dark)").matches);
+      root.dataset.theme = dark ? "light" : "dark";
+      try { localStorage.setItem("theme", root.dataset.theme); } catch (e) {}
+    });
+    setTimeout(function () {
+      document.querySelectorAll(".toast-success, .toast-info").forEach(function (t) { t.classList.add("fade"); });
+    }, 4500);
+    document.querySelectorAll("form[data-confirm]").forEach(function (form) {
+      form.addEventListener("submit", function (e) {
+        if (!window.confirm(form.dataset.confirm)) e.preventDefault();
+      });
+    });
+  })();
+</script>
+</body>
+</html>

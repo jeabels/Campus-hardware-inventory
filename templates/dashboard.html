@@ -1,0 +1,485 @@
+{% extends "base.html" %}
+{% set titles = {'overview': 'Dashboard', 'inventory': 'Inventory', 'borrow': 'Borrow log' if is_admin else 'My requests',
+                 'approvals': 'Approvals', 'students': 'Students', 'users': 'Users',
+                 'activity': 'Activity', 'settings': 'Settings'} %}
+{% block title %}{{ titles[tab] }} · Campus Hardware Inventory{% endblock %}
+{% block page_title %}{{ titles[tab] }}{% endblock %}
+
+{# ---------- small helpers ---------- #}
+{% macro csrf() %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="return_tab" value="{{ tab }}">{% endmacro %}
+{% macro pill(label, tag) %}<span class="pill pill-{{ tag or 'default' }}">{{ label }}</span>{% endmacro %}
+{% macro stock_pill(item) -%}
+  {% if item.stock <= 0 %}{{ pill('Out of stock', 'danger') }}{% elif item.stock <= low_stock_threshold %}{{ pill('Low stock', 'warn') }}{% else %}{{ pill('In stock', 'ok') }}{% endif %}
+{%- endmacro %}
+{% macro action(url, label, cls='btn-ghost', confirm=None) -%}
+  <form method="post" action="{{ url }}" class="inline" {% if confirm %}data-confirm="{{ confirm }}"{% endif %}>{{ csrf() }}
+    <button class="btn btn-sm {{ cls }}" type="submit">{{ label }}</button></form>
+{%- endmacro %}
+{% macro tile(value, unit, label, color) -%}
+  <div class="card tile"><span class="strip strip-{{ color }}"></span>
+    <div class="tile-value">{{ value }}<small>{{ unit }}</small></div><div class="tile-label">{{ label }}</div></div>
+{%- endmacro %}
+{% macro loan_actions(e) -%}
+  {% if is_admin %}
+    {% if e.status == 'PENDING_BORROW' %}
+      {{ action(url_for('borrow_action', log_id=e.log_id, action='approve'), 'Approve', 'btn-green') }}
+      {{ action(url_for('borrow_action', log_id=e.log_id, action='reject'), 'Reject', 'btn-red', 'Reject this borrow request?') }}
+    {% elif e.status == 'RETURN_PENDING' %}
+      {{ action(url_for('borrow_action', log_id=e.log_id, action='return-approve'), 'Approve return', 'btn-green') }}
+      {{ action(url_for('borrow_action', log_id=e.log_id, action='return-reject'), 'Reject', 'btn-red', 'Reject this return request? The item stays on loan.') }}
+    {% elif e.status == 'BORROWED' %}
+      {{ action(url_for('borrow_action', log_id=e.log_id, action='mark-returned'), 'Mark returned', 'btn-ghost', 'Mark this loan as returned and restore the stock?') }}
+    {% endif %}
+  {% elif e.status == 'BORROWED' and (e.requested_by or '')|lower == current_user.username|lower %}
+    {{ action(url_for('borrow_action', log_id=e.log_id, action='return-request'), 'Request return', 'btn-primary') }}
+  {% endif %}
+{%- endmacro %}
+
+{% block content %}
+
+{# ======================================================================= #}
+{% if tab == 'overview' %}
+  <div class="greeting">
+    <h2>Good to see you, {{ current_user.username }}.</h2>
+    <p class="muted">{{ today }} · {{ database_label }}</p>
+  </div>
+
+  <div class="tiles">
+    {{ tile(metrics.on_hand, 'units', 'Total stocks in hand', 'blue') }}
+    {{ tile(metrics.on_loan, 'units', 'Currently on loan', 'purple') }}
+    {{ tile(metrics.low_stock, 'items', 'Low on stock', 'yellow') }}
+    {{ tile(metrics.overdue, 'loans', 'Overdue', 'red') }}
+  </div>
+  <div class="tiles">
+    {{ tile(metrics['items'], 'types', 'Inventory item types', 'green') }}
+    {{ tile(metrics.categories, 'groups', 'Categories', 'blue') }}
+    {{ tile(metrics.pending_borrows + metrics.pending_returns, 'requests', 'Waiting for approval', 'orange') }}
+    {{ tile(metrics.returned_records, 'records', 'Returned records', 'green') }}
+  </div>
+
+  <div class="columns">
+    <section class="card panel">
+      <header class="panel-head"><h3>Stock health</h3></header>
+      <div class="panel-body">
+        {% set total = metrics['items'] or 1 %}
+        {% set g_end = (metrics.healthy / total * 100)|round(2) %}
+        {% set y_end = ((metrics.healthy + metrics.low_stock) / total * 100)|round(2) %}
+        <div class="donut-row">
+          <div class="donut" style="--g: {{ g_end }}%; --y: {{ y_end }}%;">
+            <div class="donut-center"><strong>{{ (metrics.healthy / total * 100)|round|int }}%</strong><small>well stocked</small></div>
+          </div>
+          <ul class="legend">
+            <li><i class="dot dot-green"></i>Well stocked<b>{{ metrics.healthy }}</b></li>
+            <li><i class="dot dot-yellow"></i>Low stock<b>{{ metrics.low_stock }}</b></li>
+            <li><i class="dot dot-red"></i>Out of stock<b>{{ metrics.out_of_stock }}</b></li>
+          </ul>
+        </div>
+        <hr>
+        <dl class="kv">
+          <dt>Item groups</dt><dd>{{ metrics.categories }}</dd>
+          <dt>All item types</dt><dd>{{ metrics['items'] }}</dd>
+          <dt>Students holding items</dt><dd>{{ metrics.borrowers }}</dd>
+          <dt>Stock value</dt><dd>{{ metrics.value|peso }}</dd>
+        </dl>
+      </div>
+    </section>
+
+    <section class="card panel">
+      <header class="panel-head"><h3>Borrowing snapshot</h3></header>
+      <div class="panel-body">
+        <dl class="kv">
+          <dt>Total loan records</dt><dd>{{ metrics.total_loans }}</dd>
+          <dt>Currently borrowed records</dt><dd>{{ metrics.borrowed_records }}</dd>
+          <dt>Returned records</dt><dd>{{ metrics.returned_records }}</dd>
+          <dt>Units currently on loan</dt><dd>{{ metrics.on_loan }}</dd>
+          <dt>Borrow requests pending</dt><dd>{{ metrics.pending_borrows }}</dd>
+          <dt>Return requests pending</dt><dd>{{ metrics.pending_returns }}</dd>
+          <dt>Overdue loan records</dt><dd class="{{ 'text-red' if metrics.overdue }}">{{ metrics.overdue }}</dd>
+          <dt>Overdue units</dt><dd class="{{ 'text-red' if metrics.overdue_units }}">{{ metrics.overdue_units }}</dd>
+          <dt>Active borrowers</dt><dd>{{ metrics.borrowers }}</dd>
+        </dl>
+        <hr>
+        <p class="micro muted">User accounts: {{ metrics.active_users }} active / {{ metrics.users }} total</p>
+      </div>
+    </section>
+
+    <section class="card panel">
+      <header class="panel-head"><h3>Most borrowed items</h3></header>
+      <div class="panel-body">
+        {% if metrics.top_items %}
+          {% set top = metrics.top_items[0].total or 1 %}
+          {% for row in metrics.top_items %}
+            <div class="bar-row">
+              <div class="bar-head"><span>{{ row.item_name }}</span><b>{{ row.total }}</b></div>
+              <div class="bar-track"><div class="bar-fill" style="width: {{ [4, (row.total / top * 100)|round]|max }}%"></div></div>
+            </div>
+          {% endfor %}
+        {% else %}
+          <p class="muted">No loans recorded yet. Use <a href="{{ url_for('dashboard', tab='borrow') }}">{{ 'New borrow' if is_admin else 'Request item' }}</a> to start.</p>
+        {% endif %}
+      </div>
+    </section>
+  </div>
+
+  <section class="card panel">
+    <header class="panel-head"><h3>Inventory by category</h3><a href="{{ url_for('dashboard', tab='inventory') }}">Open inventory</a></header>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Category</th><th class="num">Item types</th><th class="num">Units</th><th class="num">Stock value</th></tr></thead>
+        <tbody>
+          {% for row in metrics.categories_detail %}
+            <tr><td>{{ row.category }}</td><td class="num">{{ row.item_types }}</td><td class="num">{{ row.units }}</td><td class="num">{{ row.stock_value|peso }}</td></tr>
+          {% else %}<tr><td colspan="4" class="empty">No inventory categories yet.</td></tr>{% endfor %}
+        </tbody>
+        <tfoot><tr><td>Total stocks</td><td class="num">{{ metrics['items'] }}</td><td class="num">{{ metrics.on_hand }}</td><td class="num">{{ metrics.value|peso }}</td></tr></tfoot>
+      </table>
+    </div>
+  </section>
+
+  <section class="card panel">
+    <header class="panel-head">
+      <h3>{{ 'Recent borrow activity' if is_admin else 'My recent requests' }}</h3>
+      <a href="{{ url_for('dashboard', tab='borrow') }}">{{ 'Open borrow log' if is_admin else 'Open my requests' }}</a>
+    </header>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Item</th><th>Student</th><th>School ID</th><th class="num">Qty</th><th>Date</th><th>Due</th><th>Status</th></tr></thead>
+        <tbody>
+          {% for e in (metrics.recent if is_admin else my_loans) %}
+            <tr><td>{{ e.item_name }}</td><td>{{ e.borrower_name }}</td><td class="mono">{{ e.school_id }}</td><td class="num">{{ e.quantity }}</td>
+                <td>{{ (e.borrow_date or '')[:16] }}</td><td>{{ e.due_date or '—' }}</td><td>{{ pill(e.status_label, e.status_tag) }}</td></tr>
+          {% else %}<tr><td colspan="7" class="empty">No borrow activity yet.</td></tr>{% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+{# ======================================================================= #}
+{% elif tab == 'inventory' %}
+  <div class="page-head">
+    <div><h2>Inventory</h2><p class="muted">Items at or below {{ low_stock_threshold }} units are flagged low.</p></div>
+    <div class="actions">
+      <a class="btn btn-ghost" href="{{ url_for('export_inventory') }}">Export CSV</a>
+      {% if is_admin %}<a class="btn btn-primary" href="#add-item" onclick="document.getElementById('add-item').open=true">Add item</a>{% endif %}
+    </div>
+  </div>
+
+  {% if is_admin and edit_item %}
+  <section class="card panel highlight" id="edit-item">
+    <header class="panel-head"><h3>Edit item #{{ edit_item.item_id }}</h3><a href="{{ url_for('dashboard', tab='inventory') }}">Cancel</a></header>
+    <form method="post" action="{{ url_for('inventory_edit', item_id=edit_item.item_id) }}" class="panel-body form form-grid">{{ csrf() }}
+      <label class="field span-2"><span>Item name</span><input name="item_name" value="{{ edit_item.item_name }}" required minlength="2" maxlength="80"></label>
+      <label class="field"><span>Category</span><input name="category" list="category-list" value="{{ edit_item.category }}" required minlength="2" maxlength="40"></label>
+      <label class="field"><span>Stock on hand</span><input name="stock" type="number" min="0" step="1" value="{{ edit_item.stock }}" required></label>
+      <label class="field"><span>Unit price (₱)</span><input name="unit_price" type="number" min="0" step="0.01" value="{{ '%.2f'|format(edit_item.unit_price) }}" required></label>
+      <div class="form-actions span-all"><button class="btn btn-primary" type="submit">Save item</button></div>
+    </form>
+  </section>
+  {% endif %}
+
+  {% if is_admin %}
+  <details class="card panel collapsible" id="add-item">
+    <summary class="panel-head"><h3>Add item</h3><span class="muted micro">Stock status updates itself from the quantity on hand.</span></summary>
+    <form method="post" action="{{ url_for('inventory_add') }}" class="panel-body form form-grid">{{ csrf() }}
+      <label class="field span-2"><span>Item name</span><input name="item_name" required minlength="2" maxlength="80" placeholder="e.g. ESP32 DevKit"></label>
+      <label class="field"><span>Category</span><input name="category" list="category-list" required minlength="2" maxlength="40" value="{{ categories[0] }}"></label>
+      <label class="field"><span>Stock on hand</span><input name="stock" type="number" min="0" step="1" value="0" required></label>
+      <label class="field"><span>Unit price (₱)</span><input name="unit_price" type="number" min="0" step="0.01" value="0.00" required></label>
+      <label class="check span-all"><input type="checkbox" name="restock_existing" value="1"> If an item with this name already exists, add this stock to it instead</label>
+      <div class="form-actions span-all"><button class="btn btn-primary" type="submit">Save item</button></div>
+    </form>
+  </details>
+  <datalist id="category-list">{% for c in categories %}<option value="{{ c }}">{% endfor %}</datalist>
+  {% endif %}
+
+  <form method="get" class="toolbar">
+    <input type="hidden" name="tab" value="inventory">
+    <input type="search" name="q" value="{{ q }}" placeholder="Search items or categories">
+    <button class="btn btn-ghost" type="submit">Search</button>
+    {% if q %}<a class="btn btn-link" href="{{ url_for('dashboard', tab='inventory') }}">Clear</a>{% endif %}
+  </form>
+
+  <section class="card panel">
+    <header class="panel-head"><h3>All items</h3><span class="muted micro">{{ items|length }} shown</span></header>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th class="num">ID</th><th>Item name</th><th>Category</th><th class="num">Stock</th><th class="num">Unit price</th><th>Status</th><th class="actions-col">Actions</th></tr></thead>
+        <tbody>
+          {% for item in items %}
+            <tr>
+              <td class="num">{{ item.item_id }}</td><td><strong>{{ item.item_name }}</strong></td><td>{{ item.category }}</td>
+              <td class="num">{{ item.stock }}</td><td class="num">{{ item.unit_price|peso }}</td><td>{{ stock_pill(item) }}</td>
+              <td class="actions-col">
+                {% if item.stock > 0 %}<a class="btn btn-sm btn-primary" href="{{ url_for('dashboard', tab='borrow', item=item.item_id) }}#borrow-form">{{ 'Borrow' if is_admin else 'Request' }}</a>{% endif %}
+                {% if is_admin %}
+                  <a class="btn btn-sm btn-ghost" href="{{ url_for('dashboard', tab='inventory', edit=item.item_id) }}#edit-item">Edit</a>
+                  {{ action(url_for('inventory_delete', item_id=item.item_id), 'Delete', 'btn-red', 'Delete ' ~ item.item_name ~ ' from the inventory?') }}
+                {% endif %}
+              </td>
+            </tr>
+          {% else %}<tr><td colspan="7" class="empty">No items match that search.</td></tr>{% endfor %}
+        </tbody>
+        {% if items %}
+        <tfoot><tr><td></td><td>Total stocks</td><td></td><td class="num">{{ items|sum(attribute='stock') }}</td><td></td><td></td><td></td></tr></tfoot>
+        {% endif %}
+      </table>
+    </div>
+  </section>
+
+{# ======================================================================= #}
+{% elif tab == 'borrow' %}
+  <div class="page-head">
+    <div>
+      <h2>{{ 'Borrow log' if is_admin else 'My requests' }}</h2>
+      <p class="muted">{{ 'Every loan is recorded against the student\'s school ID.' if is_admin else 'Request equipment, then request its return. An administrator approves both steps.' }}</p>
+    </div>
+    {% if is_admin %}<div class="actions"><a class="btn btn-ghost" href="{{ url_for('export_borrow_log') }}">Export CSV</a></div>{% endif %}
+  </div>
+
+  <section class="card panel" id="borrow-form">
+    <header class="panel-head"><h3>{{ 'New borrow' if is_admin else 'Request to borrow' }}</h3>
+      <span class="muted micro">Items leave the shelf against a student school ID.</span></header>
+    {% if borrowable %}
+    <form method="post" action="{{ url_for('borrow_request') }}" class="panel-body form form-grid">{{ csrf() }}
+      <label class="field span-2"><span>Item</span>
+        <select name="item_id" required>
+          {% for it in borrowable %}
+            <option value="{{ it.item_id }}" {{ 'selected' if it.item_id == preset_item }}>{{ it.item_name }} — {{ it.stock }} on hand</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="field"><span>Quantity</span><input name="quantity" type="number" min="1" step="1" value="1" required></label>
+      <label class="field"><span>Student name</span><input name="borrower_name" required minlength="2" maxlength="80" placeholder="Juan Dela Cruz"></label>
+      <label class="field"><span>Student school ID</span><input name="school_id" required maxlength="20" placeholder="2023-04517">
+        <small>4-20 characters, at least 4 digits. Saved in uppercase.</small></label>
+      <label class="field"><span>Due in (days)</span><input name="loan_days" type="number" min="1" max="180" value="7" required></label>
+      <label class="field span-2"><span>Notes (optional)</span><input name="notes" maxlength="250" placeholder="Lab section, purpose, condition"></label>
+      {% if is_admin %}
+      <label class="check span-all"><input type="checkbox" name="checkout_now" value="1" checked> Check out immediately (staff checkout — deducts stock now, no approval step)</label>
+      {% endif %}
+      <div class="form-actions span-all"><button class="btn btn-primary" type="submit">{{ 'Save borrow' if is_admin else 'Send request' }}</button></div>
+    </form>
+    {% else %}
+      <p class="panel-body muted">Nothing is available to borrow — every item is at zero stock.</p>
+    {% endif %}
+  </section>
+
+  <form method="get" class="toolbar">
+    <input type="hidden" name="tab" value="borrow">
+    <input type="search" name="q" value="{{ q }}" placeholder="Search item, student name or school ID">
+    <select name="status" onchange="this.form.submit()">
+      {% for f in log_filters %}<option {{ 'selected' if f == status }}>{{ f }}</option>{% endfor %}
+    </select>
+    <button class="btn btn-ghost" type="submit">Filter</button>
+  </form>
+
+  <section class="card panel">
+    <header class="panel-head"><h3>{{ 'Loan records' if is_admin else 'My loan records' }}</h3><span class="muted micro">{{ loans|length }} shown</span></header>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th class="num">ID</th><th>Item</th><th>Student</th><th>School ID</th><th class="num">Qty</th><th>Date</th><th>Due</th><th>Returned</th><th>Status</th>
+          {% if is_admin %}<th>Requested by</th><th>Processed by</th>{% endif %}<th class="actions-col">Actions</th></tr></thead>
+        <tbody>
+          {% for e in loans %}
+            <tr>
+              <td class="num">{{ e.log_id }}</td><td><strong>{{ e.item_name }}</strong>{% if e.notes %}<small class="sub">{{ e.notes }}</small>{% endif %}</td>
+              <td>{{ e.borrower_name }}</td><td class="mono">{% if is_admin %}<a href="{{ url_for('dashboard', tab='students', school_id=e.school_id) }}">{{ e.school_id }}</a>{% else %}{{ e.school_id }}{% endif %}</td>
+              <td class="num">{{ e.quantity }}</td><td>{{ (e.borrow_date or '')[:16] }}</td><td>{{ e.due_date or '—' }}</td>
+              <td>{{ (e.return_date or '—')[:16] }}</td><td>{{ pill(e.status_label, e.status_tag) }}</td>
+              {% if is_admin %}<td>{{ e.requested_by or '—' }}</td><td>{{ e.processed_by or '—' }}</td>{% endif %}
+              <td class="actions-col">{{ loan_actions(e) }}</td>
+            </tr>
+          {% else %}<tr><td colspan="12" class="empty">No loans match that filter.</td></tr>{% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+{# ======================================================================= #}
+{% elif tab == 'approvals' %}
+  <div class="page-head">
+    <div><h2>Approvals</h2><p class="muted">Stock is deducted when a borrow is approved and restored when a return is approved.</p></div>
+  </div>
+
+  <section class="card panel">
+    <header class="panel-head"><h3>Borrow requests</h3><span class="pill pill-warn">{{ pending.borrows|length }} pending</span></header>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th class="num">ID</th><th>Item</th><th class="num">Qty</th><th class="num">On hand</th><th>Student</th><th>School ID</th><th>Requested by</th><th>Requested</th><th>Due</th><th class="actions-col">Decision</th></tr></thead>
+        <tbody>
+          {% for e in pending.borrows %}
+            <tr class="{{ 'row-danger' if (e.stock_now or 0) < e.quantity }}">
+              <td class="num">{{ e.log_id }}</td><td><strong>{{ e.item_name }}</strong>{% if e.notes %}<small class="sub">{{ e.notes }}</small>{% endif %}</td>
+              <td class="num">{{ e.quantity }}</td><td class="num">{{ e.stock_now if e.stock_now is not none else '—' }}</td>
+              <td>{{ e.borrower_name }}</td><td class="mono">{{ e.school_id }}</td><td>{{ e.requested_by }}</td>
+              <td>{{ (e.borrow_date or '')[:16] }}</td><td>{{ e.due_date }}</td>
+              <td class="actions-col">{{ loan_actions(e) }}</td>
+            </tr>
+          {% else %}<tr><td colspan="10" class="empty">No borrow requests are waiting.</td></tr>{% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card panel">
+    <header class="panel-head"><h3>Return requests</h3><span class="pill pill-warn">{{ pending.returns|length }} pending</span></header>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th class="num">ID</th><th>Item</th><th class="num">Qty</th><th>Student</th><th>School ID</th><th>Borrowed</th><th>Due</th><th>Requested by</th><th class="actions-col">Decision</th></tr></thead>
+        <tbody>
+          {% for e in pending.returns %}
+            <tr>
+              <td class="num">{{ e.log_id }}</td><td><strong>{{ e.item_name }}</strong></td><td class="num">{{ e.quantity }}</td>
+              <td>{{ e.borrower_name }}</td><td class="mono">{{ e.school_id }}</td><td>{{ (e.borrow_date or '')[:16] }}</td>
+              <td class="{{ 'text-red' if (e.due_date or '9999') < today }}">{{ e.due_date }}</td><td>{{ e.requested_by }}</td>
+              <td class="actions-col">{{ loan_actions(e) }}</td>
+            </tr>
+          {% else %}<tr><td colspan="9" class="empty">No return requests are waiting.</td></tr>{% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+{# ======================================================================= #}
+{% elif tab == 'students' %}
+  <div class="page-head"><div><h2>Students</h2><p class="muted">Borrowing history grouped by school ID.</p></div></div>
+  <form method="get" class="toolbar">
+    <input type="hidden" name="tab" value="students">
+    <input type="search" name="q" value="{{ q }}" placeholder="Search by school ID or name">
+    <button class="btn btn-ghost" type="submit">Search</button>
+  </form>
+
+  {% if history_id %}
+  <section class="card panel highlight">
+    <header class="panel-head"><h3>History for {{ history_id|upper }}</h3><a href="{{ url_for('dashboard', tab='students') }}">Close</a></header>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th class="num">ID</th><th>Item</th><th>Student</th><th class="num">Qty</th><th>Date</th><th>Due</th><th>Returned</th><th>Status</th></tr></thead>
+        <tbody>
+          {% for e in history %}
+            <tr><td class="num">{{ e.log_id }}</td><td>{{ e.item_name }}</td><td>{{ e.borrower_name }}</td><td class="num">{{ e.quantity }}</td>
+                <td>{{ (e.borrow_date or '')[:16] }}</td><td>{{ e.due_date or '—' }}</td><td>{{ (e.return_date or '—')[:16] }}</td><td>{{ pill(e.status_label, e.status_tag) }}</td></tr>
+          {% else %}<tr><td colspan="8" class="empty">No records for that school ID.</td></tr>{% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  {% endif %}
+
+  <section class="card panel">
+    <header class="panel-head"><h3>Borrower directory</h3></header>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>School ID</th><th>Student</th><th class="num">Total loans</th><th class="num">Still out</th><th class="num">Overdue</th><th>Last borrowed</th></tr></thead>
+        <tbody>
+          {% for r in students %}
+            <tr class="{{ 'row-danger' if r.overdue else ('row-warn' if r.still_out) }}">
+              <td class="mono"><a href="{{ url_for('dashboard', tab='students', school_id=r.school_id, q=q) }}">{{ r.school_id }}</a></td>
+              <td>{{ r.borrower_name }}</td><td class="num">{{ r.total }}</td><td class="num">{{ r.still_out }}</td><td class="num">{{ r.overdue }}</td><td>{{ (r.last_borrow or '')[:16] }}</td>
+            </tr>
+          {% else %}<tr><td colspan="6" class="empty">No student has borrowed anything yet.</td></tr>{% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+{# ======================================================================= #}
+{% elif tab == 'users' %}
+  <div class="page-head"><div><h2>Users</h2><p class="muted">Unlock accounts, change roles and review password reset requests.</p></div></div>
+
+  <section class="card panel">
+    <header class="panel-head"><h3>Accounts</h3></header>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th class="num">ID</th><th>Username</th><th>Email</th><th>Role</th><th class="num">Failed</th><th>Locked</th><th>Active</th><th class="actions-col">Actions</th></tr></thead>
+        <tbody>
+          {% for u in users %}
+            <tr class="{{ 'row-danger' if u.is_locked or not u.is_active }}">
+              <td class="num">{{ u.id }}</td><td><strong>{{ u.username }}</strong>{% if u.id == current_user.id %} <small class="muted">(you)</small>{% endif %}</td>
+              <td>{{ u.email }}</td><td>{{ pill(u.role|title, 'blue' if u.role == 'ADMIN' else 'default') }}</td>
+              <td class="num">{{ u.failed_attempts }}</td><td>{{ 'Yes' if u.is_locked else 'No' }}</td><td>{{ 'Yes' if u.is_active else 'No' }}</td>
+              <td class="actions-col">
+                {% if u.is_locked or u.failed_attempts %}{{ action(url_for('user_action', user_id=u.id, action='unlock'), 'Unlock', 'btn-primary') }}{% endif %}
+                {% if u.id != current_user.id %}
+                  {{ action(url_for('user_action', user_id=u.id, action='toggle'), 'Disable' if u.is_active else 'Enable', 'btn-ghost') }}
+                  <form method="post" action="{{ url_for('user_action', user_id=u.id, action='role') }}" class="inline"
+                        data-confirm="Change {{ u.username }} to {{ 'User' if u.role == 'ADMIN' else 'Admin' }}?">{{ csrf() }}
+                    <input type="hidden" name="role" value="{{ 'USER' if u.role == 'ADMIN' else 'ADMIN' }}">
+                    <button class="btn btn-sm btn-ghost" type="submit">{{ 'Make user' if u.role == 'ADMIN' else 'Make admin' }}</button>
+                  </form>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card panel">
+    <header class="panel-head"><h3>Password reset requests</h3></header>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th class="num">ID</th><th>Username</th><th>Email</th><th>Requested</th><th>Status</th><th>Reviewed by</th><th class="actions-col">Decision</th></tr></thead>
+        <tbody>
+          {% for r in resets %}
+            <tr>
+              <td class="num">{{ r.request_id }}</td><td>{{ r.username }}</td><td>{{ r.email }}</td><td>{{ r.requested_at[:16] }}</td>
+              <td>{{ pill(r.status|title, {'PENDING': 'warn', 'APPROVED': 'ok'}.get(r.status, 'danger')) }}</td><td>{{ r.reviewed_by or '—' }}</td>
+              <td class="actions-col">
+                {% if r.status == 'PENDING' %}
+                  {{ action(url_for('reset_action', request_id=r.request_id, action='approve'), 'Approve', 'btn-green') }}
+                  {{ action(url_for('reset_action', request_id=r.request_id, action='reject'), 'Reject', 'btn-red') }}
+                {% endif %}
+              </td>
+            </tr>
+          {% else %}<tr><td colspan="7" class="empty">No reset requests.</td></tr>{% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+{# ======================================================================= #}
+{% elif tab == 'activity' %}
+  <div class="page-head"><div><h2>Activity</h2><p class="muted">The 300 most recent system events.</p></div></div>
+  <section class="card panel">
+    <header class="panel-head"><h3>System log</h3></header>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Time</th><th>User</th><th>Action</th><th>Details</th></tr></thead>
+        <tbody>
+          {% for log in logs %}
+            <tr><td class="nowrap">{{ log.timestamp }}</td><td>{{ log.username or 'SYSTEM' }}</td><td><span class="code">{{ log.action }}</span></td><td class="wrap">{{ log.details or "" }}</td></tr>
+          {% else %}<tr><td colspan="4" class="empty">No activity recorded yet.</td></tr>{% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+{# ======================================================================= #}
+{% elif tab == 'settings' %}
+  <div class="page-head"><div><h2>Settings</h2><p class="muted">Applies to every user of this installation.</p></div></div>
+  <div class="columns two">
+    <section class="card panel">
+      <header class="panel-head"><h3>Stock alerts</h3></header>
+      <form method="post" action="{{ url_for('settings_threshold') }}" class="panel-body form">{{ csrf() }}
+        <label class="field"><span>Low stock threshold</span>
+          <input name="threshold" type="number" min="1" step="1" value="{{ low_stock_threshold }}" required>
+          <small>Items at or below this quantity are flagged Low Stock on the dashboard.</small></label>
+        <div class="form-actions"><button class="btn btn-primary" type="submit">Save threshold</button></div>
+      </form>
+    </section>
+    <section class="card panel">
+      <header class="panel-head"><h3>Deployment</h3></header>
+      <div class="panel-body">
+        <dl class="kv">
+          <dt>Database</dt><dd>{{ database_label }}</dd>
+          <dt>Health check</dt><dd><a href="{{ url_for('healthz') }}">/healthz</a></dd>
+          <dt>Today (campus time)</dt><dd>{{ today }}</dd>
+        </dl>
+        <p class="micro muted">GitHub stores the code · Supabase stores the data · Render runs the web app.</p>
+      </div>
+    </section>
+  </div>
+{% endif %}
+{% endblock %}

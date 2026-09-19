@@ -1,0 +1,28 @@
+# ---- Files that must NOT be uploaded to GitHub (Lab 8, Section V) ----
+# Local SQLite database (the real data now lives in Supabase)
+hardware_inventory.db
+*.db
+*.sqlite3
+
+# Secrets: Supabase connection string, SECRET_KEY, passwords
+.env
+.env.*
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+
+# Local log folder
+app_logging/
+
+# Editor / OS clutter
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

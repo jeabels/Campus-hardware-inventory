@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Sign in · Campus Hardware Inventory{% endblock %}
+{% block content %}
+<div class="section-title">
+  <h2>Welcome back</h2>
+  <p>Sign in with your account credentials.</p>
+</div>
+<form method="post" class="form" autocomplete="on">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <label class="field">
+    <span>Username</span>
+    <input name="username" value="{{ username }}" placeholder="admin" required autofocus autocomplete="username">
+  </label>
+  <label class="field">
+    <span>Password</span>
+    <span class="password-wrap">
+      <input name="password" type="password" required autocomplete="current-password" id="loginPassword">
+      <button type="button" class="reveal" onclick="var i=document.getElementById('loginPassword');i.type=i.type==='password'?'text':'password';this.textContent=i.type==='password'?'Show':'Hide';">Show</button>
+    </span>
+  </label>
+  <button class="btn btn-primary btn-block btn-lg" type="submit">Sign in</button>
+</form>
+<div class="note">
+  <strong>Accounts lock after 3 failed attempts</strong>
+  <span>Locked out? Submit a <a href="{{ url_for('reset') }}">reset request</a> and an administrator will review it.</span>
+</div>
+{% endblock %}

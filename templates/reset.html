@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Reset password · Campus Hardware Inventory{% endblock %}
+{% block content %}
+<div class="section-title">
+  <h2>Reset password</h2>
+  <p>An administrator reviews every request before it takes effect. Approval also unlocks the account.</p>
+</div>
+<form method="post" class="form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <label class="field">
+    <span>Account username</span>
+    <input name="username" value="{{ form.get('username', '') }}" required autocomplete="username">
+  </label>
+  <label class="field">
+    <span>Registered email</span>
+    <input name="email" type="email" value="{{ form.get('email', '') }}" required autocomplete="email">
+  </label>
+  <div class="grid-2">
+    <label class="field">
+      <span>New password</span>
+      <input name="password" type="password" required minlength="8" autocomplete="new-password">
+    </label>
+    <label class="field">
+      <span>Confirm new password</span>
+      <input name="confirm" type="password" required minlength="8" autocomplete="new-password">
+    </label>
+  </div>
+  <button class="btn btn-yellow btn-block btn-lg" type="submit">Send request</button>
+</form>
+{% endblock %}
