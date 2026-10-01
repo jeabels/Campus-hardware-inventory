@@ -1,24 +1,4 @@
-"""
-Campus Hardware Inventory System
-================================
 
-Laboratorysystem.py keeps ALL of the original application logic:
-
-* the database layer (SQLite locally, or Supabase PostgreSQL through DATABASE_URL),
-* the validation schemas (pydantic),
-* the controllers (login, register, reset, inventory, borrowing, users, settings),
-* the original Tkinter desktop interface.
-
-Lab 8 changes (minimum-change approach):
-
-1. Tkinter is OPTIONAL. Render has no desktop, so importing this file must not
-   require Tkinter. The desktop classes are still here and still work on Windows.
-2. The database layer reads DATABASE_URL. If it is set, the app uses PostgreSQL
-   (Supabase). If it is not set, the app keeps using models/hardware_inventory.db.
-3. The business logic that used to live inside the Tkinter button handlers was
-   moved into plain functions ("controllers") so that BOTH the desktop window and
-   the Flask web app (app.py) call the exact same code.
-"""
 
 from __future__ import annotations
 
@@ -33,7 +13,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 # ---------------------------------------------------------------------------
-# Lab 8 / A.1 - Make Tkinter optional
+# Lab 7 / A.1 - Make Tkinter optional
 # ---------------------------------------------------------------------------
 try:
     import tkinter as tk

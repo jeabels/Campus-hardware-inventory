@@ -9,16 +9,24 @@ Local run : python app.py              -> http://127.0.0.1:5000
 Render    : gunicorn app:app
 
 Environment variables
-    DATABASE_URL  Supabase PostgreSQL URI. Not set -> local SQLite file is used.
-    SECRET_KEY    Long random value used by Flask to sign the session cookie.
+    DATABASE_URL   Supabase PostgreSQL URI. Not set -> local SQLite file is used.
+    SECRET_KEY     Long random value used by Flask to sign the session cookie.
+    SMTP_LOGIN     Brevo SMTP login (Lab 9)          - from Brevo > SMTP & API > SMTP
+    SMTP_PASSWORD  Brevo SMTP key / master password  - never commit this to GitHub
+    SMTP_SENDER    Verified sender email in Brevo (the "From" address)
 """
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import os
+import random
 import secrets
+import smtplib
 import time
 from datetime import timedelta
+from email.mime.text import MIMEText
 from functools import wraps
 
 from flask import (
@@ -50,6 +58,92 @@ app.config.update(
     PERMANENT_SESSION_LIFETIME=timedelta(hours=8),
     MAX_CONTENT_LENGTH=1 * 1024 * 1024,
 )
+
+# ---------------------------------------------------------------------------
+# Lab 9 - Brevo SMTP configuration (Two-Step Email Verification / OTP)
+# Credentials come from environment variables so they are never pushed to GitHub.
+# ---------------------------------------------------------------------------
+
+SMTP_SERVER = "smtp-relay.brevo.com"
+SMTP_PORT = 2525  # Brevo's alternative port; Render free services block 25/465/587
+SMTP_LOGIN = os.getenv("SMTP_LOGIN", "").strip()
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "").strip()
+SMTP_SENDER = os.getenv("SMTP_SENDER", "").strip()  # must be a verified sender in Brevo
+
+OTP_LIFETIME_SECONDS = 10 * 60  # a code is valid for 10 minutes
+OTP_MAX_ATTEMPTS = 5            # wrong guesses allowed before the code is cancelled
+
+
+def send_otp_email(receiver_email, otp, intent):
+    """Sends a 6-digit OTP using Brevo SMTP. Returns True when the email was accepted."""
+    if not (SMTP_LOGIN and SMTP_PASSWORD and SMTP_SENDER):
+        app.logger.error("Email Error: SMTP_LOGIN, SMTP_PASSWORD or SMTP_SENDER is not set.")
+        return False
+
+    msg = MIMEText(
+        f"Your {intent} One-Time Password (OTP) is: {otp}\n\n"
+        f"This code expires in {OTP_LIFETIME_SECONDS // 60} minutes. "
+        "Please enter this code to proceed. Do not share this code with anyone."
+    )
+    msg["Subject"] = f"Laboratory System - {intent} OTP"
+    msg["From"] = SMTP_SENDER
+    msg["To"] = receiver_email
+    try:
+        # timeout keeps a slow mail server from freezing the Render worker
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=20) as server:
+            server.starttls()
+            server.login(SMTP_LOGIN, SMTP_PASSWORD)
+            server.send_message(msg)
+        return True
+    except Exception as e:
+        app.logger.error(f"Email Error: {e}")
+        return False
+
+
+def _otp_digest(otp: str) -> str:
+    """The session cookie is signed but readable, so only a keyed hash of the OTP is stored in it."""
+    return hmac.new(app.config["SECRET_KEY"].encode(), otp.encode(), hashlib.sha256).hexdigest()
+
+
+def _start_otp(session_key: str, email: str, intent: str, **pending) -> bool:
+    """Generate an OTP, keep the pending form data in the session, and email the code."""
+    otp = str(random.SystemRandom().randint(100000, 999999))
+    session[session_key] = {
+        **pending,
+        "email": email,
+        "otp_hash": _otp_digest(otp),
+        "expires": time.time() + OTP_LIFETIME_SECONDS,
+        "attempts": 0,
+    }
+    if send_otp_email(email, otp, intent=intent):
+        return True
+    session.pop(session_key, None)
+    return False
+
+
+def _account_conflict(username: str, email: str) -> str | None:
+    """Message if the username or email is already registered (checked BEFORE sending an OTP)."""
+    with core.connect_db() as connection:
+        row = connection.execute(
+            "SELECT username FROM users WHERE LOWER(username) = LOWER(?) OR LOWER(email) = LOWER(?)",
+            (username, email),
+        ).fetchone()
+    if row is None:
+        return None
+    if row["username"].lower() == username.lower():
+        return "That username is already taken."
+    return "That email address is already registered."
+
+
+def _account_matches(username: str, email: str) -> bool:
+    """True if the username + email pair belongs to an account (reset flow)."""
+    with core.connect_db() as connection:
+        row = connection.execute(
+            "SELECT id FROM users WHERE LOWER(username) = LOWER(?) AND LOWER(email) = LOWER(?)",
+            (username, email),
+        ).fetchone()
+    return row is not None
+
 
 # Create tables (if missing) and load settings when the server starts.
 core.initialize_database()
@@ -181,35 +275,133 @@ def login():
 
 @app.route("/register", methods=["GET", "POST"])
 def register():
+    """Lab 9 - Step 1 of registration: validate the form, then email a 6-digit OTP."""
     if g.user:
         return redirect(url_for("dashboard"))
-    if request.method == "POST":
-        # Public sign-ups are always USER accounts. An ADMIN can promote them later.
-        ok, message = core.register_user(
-            request.form.get("username", ""),
-            request.form.get("email", ""),
-            request.form.get("password", ""),
-            "USER",
-        )
-        flash(message, "success" if ok else "error")
-        if ok:
-            return redirect(url_for("login"))
+    if request.method == "GET":
+        return render_template("register.html", auth_page=True, form=request.form)
+
+    username = request.form.get("username", "").strip()
+    email = request.form.get("email", "").strip()
+    password = request.form.get("password", "")
+    # Public sign-ups are always USER accounts. An ADMIN can promote them later.
+    role = "USER"
+
+    if not username or not email or not password:
+        flash("All registration fields are required.", "error")
+        return render_template("register.html", auth_page=True, form=request.form)
+
+    # Check the same rules register_user() uses BEFORE spending an email on the OTP.
+    try:
+        validated = core.UserSchema(username=username, email=email, password=password, role=role)
+    except ValidationError as error:
+        flash(core.first_error(error), "error")
+        return render_template("register.html", auth_page=True, form=request.form)
+    conflict = _account_conflict(validated.username, validated.email)
+    if conflict:
+        flash(conflict, "error")
+        return render_template("register.html", auth_page=True, form=request.form)
+
+    # Generate OTP and save the pending account to the session
+    if _start_otp("pending_user", validated.email, "Account Registration",
+                  username=validated.username, password=password, role=role):
+        flash("We sent a 6-digit code to your email. Please verify.", "info")
+        return redirect(url_for("verify_otp", action="register"))
+    flash("Failed to send OTP email. Please try again.", "error")
     return render_template("register.html", auth_page=True, form=request.form)
 
 
-@app.route("/reset", methods=["GET", "POST"])
-def reset():
-    if request.method == "POST":
-        ok, message = core.submit_password_reset(
-            request.form.get("username", ""),
-            request.form.get("email", ""),
-            request.form.get("password", ""),
-            request.form.get("confirm", ""),
-        )
-        flash(message, "info" if ok else "error")
-        if ok:
-            return redirect(url_for("login"))
+@app.route("/reset-request", methods=["GET", "POST"])
+def reset_request():
+    """Lab 9 - Step 1 of a password reset: validate the form, then email a 6-digit OTP."""
+    if request.method == "GET":
+        return render_template("reset.html", auth_page=True, form=request.form)
+
+    username = request.form.get("username", "").strip()
+    email = request.form.get("email", "").strip()
+    # Accept the Lab 9 field names and the original reset.html field names.
+    new_password = request.form.get("new_password") or request.form.get("password", "")
+    confirm_password = request.form.get("confirm_password") or request.form.get("confirm", "")
+
+    if not username or not email or not new_password or not confirm_password:
+        flash("All reset fields are required.", "error")
+        return render_template("reset.html", auth_page=True, form=request.form)
+    if new_password != confirm_password:
+        flash("New passwords do not match.", "error")
+        return render_template("reset.html", auth_page=True, form=request.form)
+    try:
+        core.UserSchema(username=username, email=email, password=new_password, role="USER")
+    except ValidationError as error:
+        flash(core.first_error(error), "error")
+        return render_template("reset.html", auth_page=True, form=request.form)
+    if not _account_matches(username, email):
+        flash("No account matches that username and email combination.", "error")
+        return render_template("reset.html", auth_page=True, form=request.form)
+
+    # Generate OTP and save the pending reset to the session
+    if _start_otp("pending_reset", email, "Password Reset",
+                  username=username, new_password=new_password):
+        flash("We sent a 6-digit code to your email. Please verify.", "info")
+        return redirect(url_for("verify_otp", action="reset"))
+    flash("Failed to send OTP email. Please try again.", "error")
     return render_template("reset.html", auth_page=True, form=request.form)
+
+
+# Templates written for Lab 8 call url_for('reset'); keep that name working.
+app.add_url_rule("/reset", endpoint="reset", view_func=reset_request, methods=["GET", "POST"])
+
+
+@app.route("/verify-otp/<action>", methods=["GET", "POST"])
+def verify_otp(action):
+    """Lab 9 - Step 2: check the emailed code, then create the account / submit the reset."""
+    if action not in ("register", "reset"):
+        abort(404)
+    # Determine which session data to use
+    session_key = "pending_user" if action == "register" else "pending_reset"
+    data = session.get(session_key)
+    if not data:
+        flash("Session expired. Please try again.", "warning")
+        return redirect(url_for("login"))
+    restart = url_for("register" if action == "register" else "reset_request")
+
+    if time.time() > data.get("expires", 0):
+        session.pop(session_key, None)
+        flash("That code has expired. Please request a new one.", "warning")
+        return redirect(restart)
+
+    if request.method == "POST":
+        user_otp = request.form.get("otp_code", "").strip()
+        if user_otp.isdigit() and hmac.compare_digest(_otp_digest(user_otp), data["otp_hash"]):
+            session.pop(session_key, None)
+            if action == "register":
+                # OTP matches, create the user
+                ok, msg = core.register_user(data["username"], data["email"], data["password"], data["role"])
+                flash("Account successfully verified and created! Please sign in." if ok else msg,
+                      "success" if ok else "error")
+                return redirect(url_for("login") if ok else restart)
+            # OTP matches, submit the reset request to the Admin
+            ok, msg = core.submit_password_reset(
+                data["username"], data["email"], data["new_password"], data["new_password"]
+            )
+            flash("Email verified! Your password reset request has been submitted to the administrators."
+                  if ok else msg, "success" if ok else "error")
+            return redirect(url_for("login") if ok else restart)
+
+        data["attempts"] = data.get("attempts", 0) + 1
+        if data["attempts"] >= OTP_MAX_ATTEMPTS:
+            session.pop(session_key, None)
+            flash("Too many wrong codes. Please start again.", "error")
+            return redirect(restart)
+        session[session_key] = data
+        flash(f"Invalid OTP code. Try again ({OTP_MAX_ATTEMPTS - data['attempts']} attempt(s) left).", "error")
+
+    return render_template(
+        "otp_verify.html",
+        auth_page=True,
+        action=action,
+        email=data["email"],
+        action_url=url_for("verify_otp", action=action),
+    )
 
 
 @app.route("/logout", methods=["POST"])
